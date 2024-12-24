@@ -15,9 +15,9 @@ from botocore.exceptions import ClientError
 import random
 # from keras_hub.tokenizers import LlamaTokenizer
 
-ATHENA=boto3.client('athena')
-GLUE=boto3.client('glue')
-S3=boto3.client('s3')
+ATHENA = boto3.client('athena', region_name='us-east-1')  
+GLUE = boto3.client('glue', region_name='us-east-1')
+S3 = boto3.client('s3', region_name='us-east-1')
 from botocore.config import Config
 config = Config(
     read_timeout=120,
@@ -31,6 +31,8 @@ FORMAT = "%(asctime)s %(message)s"
 logging.basicConfig(format=FORMAT)
 logger = logging.getLogger(__name__)
 logger.setLevel("INFO")
+
+
 
 BEDROCK=boto3.client(service_name='bedrock-runtime',region_name='us-east-1',config=config)
 st.set_page_config(page_icon=None, layout="wide")
