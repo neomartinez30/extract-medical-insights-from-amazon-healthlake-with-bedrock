@@ -13,6 +13,8 @@ import io
 from botocore.config import Config
 from botocore.exceptions import ClientError
 import random
+# from keras_hub.tokenizers import LlamaTokenizer
+
 ATHENA=boto3.client('athena')
 GLUE=boto3.client('glue')
 S3=boto3.client('s3')
@@ -23,14 +25,23 @@ config = Config(
         max_attempts = 10
     )
 )
-BEDROCK=boto3.client(service_name='bedrock-runtime',region_name='us-west-2',config=config)
+import logging
+
+FORMAT = "%(asctime)s %(message)s"
+logging.basicConfig(format=FORMAT)
+logger = logging.getLogger(__name__)
+logger.setLevel("INFO")
+
+BEDROCK=boto3.client(service_name='bedrock-runtime',region_name='us-east-1',config=config)
 st.set_page_config(page_icon=None, layout="wide")
 with open('pricing.json','r',encoding='utf-8') as f:
     pricing_file = json.load(f)
 with open('config.json', 'r',encoding='utf-8') as f:
     config_file = json.load(f)
 
-ATHENA_WORKGROUP_BUCKET_NAME = config_file["athena-workgroup-bucket-name"]
+ATHENA_WORKGROUP_BUCKET_NAME = "athena-203918854345-22hcl401"
+
+logger.info("after edits")
 
 if 'messages' not in st.session_state:
     st.session_state['messages'] = []
@@ -56,17 +67,17 @@ if 'cost' not in st.session_state:
     st.session_state['cost'] = 0
 import json
 
-@st.cache_resource
-def token_counter(path):
-    tokenizer = LlamaTokenizer.from_pretrained(path)
-    return tokenizer
+# #@st.cache_resource
+# # def token_counter(path):
+#     tokenizer = LlamaTokenizer.from_pretrained(path)
+#     return tokenizer
 
 @st.cache_data
 def get_database_list(catalog):
     response = ATHENA.list_databases(
         CatalogName=catalog,
-
     )
+    print(response)
     db=[x['Name'] for x in response['DatabaseList']]
     return db
 
@@ -93,7 +104,7 @@ def read_s3_file_to_df(bucket_name,key, max_retries=5, initial_delay=1):
     for retry in range(max_retries):
         try:
             # Download the file to memory
-            obj = s3.get_object(Bucket=bucket_name, Key=key)
+            obj = s3.get_object(Bucket=ATHENA_WORKGROUP_BUCKET_NAME, Key=key)
             file_bytes = obj['Body'].read()
 
             # Read the bytes into a pandas DataFrame
@@ -147,19 +158,19 @@ def bedrock_streemer(params,response, handler):
 def bedrock_claude_(params,chat_history,system_message, prompt,model_id,image_path, handler):
     chat_history_copy = chat_history[:]
     content=[]
-    if image_path:       
+    if image_path:
         if not isinstance(image_path, list):
-            image_path=[image_path]      
+            image_path=[image_path]
         for img in image_path:
             s3 = boto3.client('s3',region_name="us-east-1")
-            match = re.match("s3://(.+?)/(.+)", img)            
+            match = re.match("s3://(.+?)/(.+)", img)
             image_name=os.path.basename(img)
             _,ext=os.path.splitext(image_name)
-            if "jpg" in ext: ext=".jpeg"           
+            if "jpg" in ext: ext=".jpeg"
             bucket_name = match.group(1)
             key = match.group(2)    
             obj = s3.get_object(Bucket=bucket_name, Key=key)
-            bytes_image=obj['Body'].read()            
+            bytes_image=obj['Body'].read()
             content.extend([{"text":image_name},{
               "image": {
                 "format": f"{ext.lower().replace('.','')}",
@@ -236,6 +247,7 @@ def athena_query_func(statement, params):
     response = ATHENA.start_query_execution(
         QueryString=statement,
         # ClientRequestToken='string',
+        WorkGroup='primary',
         QueryExecutionContext={
             'Database': params["db"],
             'Catalog': 'AwsDataCatalog'
@@ -395,6 +407,7 @@ def athena_query_with_self_correction(question,q_s, params, error_bank=None, max
 
 
 def db_summary(params):
+    print(params)
     sql=f"SELECT * FROM information_schema.columns WHERE table_name='{params[0]}' AND table_schema='{params[1]['db']}'"
     sql2=f"SELECT * from {params[1]['db']}.{params[0]} LIMIT 3"
     patient_id=params[1]['id']
@@ -515,29 +528,34 @@ If the data is empty, respond with "no relevant information". If the data is nor
     return summary,fhir_table
 
 def struct_summary(params):
-    prompts=""
+    prompts = ""
     if st.session_state['button']:
-        table_names=params['table']
-        table_names=[[x]+[params] for x in table_names]
-        import multiprocessing    
+        table_names = params['table']
+        table_names = [[x] + [params] for x in table_names]
+
         # Define the number of concurrent invocations
         num_concurrent_invocations = len(table_names)
 
         # Create a multiprocessing pool
-        pool = multiprocessing.Pool(processes=num_concurrent_invocations)    
-        results=pool.map(db_summary,  table_names)
-        pool.close()
-        pool.join()
+        with multiprocessing.Pool(processes=num_concurrent_invocations) as pool:
+            try:
+                results = pool.map(db_summary, table_names)
+            except Exception as e:
+                logger.error(f"Error in multiprocessing pool: {e}")
+                st.error("An error occurred while processing the tables.")
+                return
+
         # Unpack the results into separate lists
         summary = [result[0] for result in results]
         fhir_table = [result[1] for result in results]
-        
-        fhir_keys=[list(x.keys())[0] for x in summary]
-        fhir_values=[list(x.values())[0] for x in summary]
-        fhir_table_keys=[list(x.keys())[0] for x in fhir_table]
-        fhir_table_values=[list(x.values())[0] for x in fhir_table]
-        st.session_state['fhir_summary']= dict(zip(fhir_keys, fhir_values))
-        st.session_state['fhir_tables']=dict(zip(fhir_table_keys, fhir_table_values))
+
+        fhir_keys = [list(x.keys())[0] for x in summary]
+        fhir_values = [list(x.values())[0] for x in summary]
+        fhir_table_keys = [list(x.keys())[0] for x in fhir_table]
+        fhir_table_values = [list(x.values())[0] for x in fhir_table]
+
+        st.session_state['fhir_summary'] = dict(zip(fhir_keys, fhir_values))
+        st.session_state['fhir_tables'] = dict(zip(fhir_table_keys, fhir_table_values))
 
         if 'prompt 1' in params['template']:
             prompts = f'''Please maintain an active voice tone.
@@ -548,13 +566,13 @@ Here are summaries from various FHIR resources of a patient's medical history:
 
 Please do the following:
 1. Read through the provided summaries from various FHIR resources in detail.
-2. Merge the summaries into a single coherent and cohesive paragraph narrative of the patients medical history. 
+2. Merge the summaries into a single coherent and cohesive paragraph narrative of the patients medical history.
 3. The summary should provide a longitudinal view of the patient's clinical activity based on various ingested CCDAs/FHIR resources.
 4. Highlight any abnormal test/lab result findings in your summary if available.
 5. Do not infer conditions not explicitly mentioned
 6. Exclude dismissed or ruled out conditions. '''
         elif 'prompt 2' in params['template']:
-            prompts = f'''Generate a comprehensive summary of patient's medical history from the provided summaries from various FHIR resources of a patient's medical records. 
+            prompts = f'''Generate a comprehensive summary of patient's medical history from the provided summaries from various FHIR resources of a patient's medical records.
 
 <summaries>
 {summary}
@@ -563,86 +581,86 @@ Please do the following:
 Please do the following:
 - Read through the provided summaries from various FHIR resources in detail.
 - Identify the patient's major medical conditions, both current and historical.
-- Note any procedures, hospitalizations, specialist visits related to these conditions.  
+- Note any procedures, hospitalizations, specialist visits related to these conditions.
 - Mention onset, diagnosis dates, and treatment details for key conditions.
 - Ensure accuracy - do not infer conditions not explicitly mentioned.
 - Exclude dismissed or ruled out conditions.
 - Summarize concisely into a paragraph. '''
-       
-        st.session_state['summary_1'] = summary        
-        
-    st.session_state['button']=False
-    colm1,colm2=st.columns([1,1])
-  
+
+        st.session_state['summary_1'] = summary
+
+    st.session_state['button'] = False
+    colm1, colm2 = st.columns([1, 1])
+
     with colm1:
-        container1=st.empty()
-        stream_handler = None #StreamHandler(container1)        
+        container1 = st.empty()
+        stream_handler = None  # StreamHandler(container1)
         if prompts:
-            system_prompt="You are a medical expert."
-            final_summary=summary_llm(prompts,params, system_prompt,container1)#, [stream_handler])
-            st.session_state['final_summary_1']=final_summary
+            system_prompt = "You are a medical expert."
+            final_summary = summary_llm(prompts, params, system_prompt, container1)  # , [stream_handler])
+            st.session_state['final_summary_1'] = final_summary
             st.rerun()
         if st.session_state['final_summary_1']:
-            st.header("Patients Consolidated Summary",divider='red')
+            st.header("Patients Consolidated Summary", divider='red')
             st.markdown(st.session_state['final_summary_1'])
-            with st.expander(label="**FHIR Section Summary**"):                  
-                fhir_keys=list(st.session_state['fhir_summary'].keys())                
-                header_holder={}
+            with st.expander(label="**FHIR Section Summary**"):
+                fhir_keys = list(st.session_state['fhir_summary'].keys())
+                header_holder = {}
                 tab_objects = st.tabs([f"**{x.upper()}**" for x in fhir_keys])
                 # Assign each tab object to the corresponding key in the dictionary
                 for i, tab_obj in enumerate(tab_objects):
-                    header_holder[fhir_keys[i]] = tab_obj 
+                    header_holder[fhir_keys[i]] = tab_obj
                 for key in fhir_keys:
                     with header_holder[key]:
-                        st.markdown(st.session_state['fhir_summary'][key], unsafe_allow_html=True )
-            with st.expander(label="**FHIR Section Tables**"): 
-                fhir_table_keys=list(st.session_state['fhir_tables'].keys())
-                header_holder={}
+                        st.markdown(st.session_state['fhir_summary'][key], unsafe_allow_html=True)
+            with st.expander(label="**FHIR Section Tables**"):
+                fhir_table_keys = list(st.session_state['fhir_tables'].keys())
+                header_holder = {}
                 tab_objects = st.tabs([f"**{x.upper()}**" for x in fhir_table_keys])
                 # Assign each tab object to the corresponding key in the dictionary
                 for i, tab_obj in enumerate(tab_objects):
-                    header_holder[fhir_table_keys[i]] = tab_obj 
+                    header_holder[fhir_table_keys[i]] = tab_obj
                 for key in fhir_table_keys:
                     with header_holder[key]:
                         st.dataframe(st.session_state['fhir_tables'][key])
     with colm2:
         with st.container(height=500):
-            if st.session_state['final_summary_1']:            
+            if st.session_state['final_summary_1']:
                 for message in st.session_state.messages:
-                    with st.chat_message(message["role"]):   
+                    with st.chat_message(message["role"]):
                         if "```" in message["content"]:
-                            st.markdown(message["content"],unsafe_allow_html=True )
+                            st.markdown(message["content"], unsafe_allow_html=True)
                         else:
-                            st.markdown(message["content"].replace("$", "\$"),unsafe_allow_html=True )
+                            st.markdown(message["content"].replace("\$", "\\$"), unsafe_allow_html=True)
 
+                if prompt := st.chat_input("Whats up?"):
+                    st.session_state.messages.append({"role": "user", "content": prompt})
+                    with st.chat_message("user"):
+                        st.markdown(prompt.replace("\$", "\\$"), unsafe_allow_html=True)
+                    with st.chat_message("assistant"):
+                        message_placeholder = st.empty()
+                        system_prompt = "You are an medical expert."
+                        prompts = f'''Here is a medical record of a patient:
+<record>
+{st.session_state['summary_1']}
+</record>
 
-                if prompt := st.chat_input("Whats up?"):        
-                    st.session_state.messages.append({"role": "user", "content": prompt})        
-                    with st.chat_message("user"):        
-                        st.markdown(prompt.replace("$", "\$"),unsafe_allow_html=True )
-                    with st.chat_message("assistant"): 
-                        message_placeholder = st.empty()      
-                        system_prompt="You are an medical expert."
-                        prompts=f'''Here is a medical record of a patient:
-    <record>
-    {st.session_state['summary_1']}
-    </record>                   
+Review the patients medical record thoroughly.
+Provided an answer to the question if available in the medical record.
+Do not include or reference quoted content verbatim in the answer
+If the question cannot be answered by the document, say so.
 
-    Review the patients medical record thoroughly. 
-    Provided an answer to the question if available in the medical record.
-    Do not include or reference quoted content verbatim in the answer
-    If the question cannot be answered by the document, say so.
-
-    Question: {prompt}? '''
-                        output_answer=summary_llm(prompts,params, system_prompt,message_placeholder) 
-                        message_placeholder.markdown(output_answer.replace("$", "\$"),unsafe_allow_html=True )
-                        st.session_state.messages.append({"role": "assistant", "content": output_answer}) 
+Question: {prompt}? '''
+                        output_answer = summary_llm(prompts, params, system_prompt, message_placeholder)
+                        message_placeholder.markdown(output_answer.replace("\$", "\\$"), unsafe_allow_html=True)
+                        st.session_state.messages.append({"role": "assistant", "content": output_answer})
                         st.rerun()
 
-@st.cache_data
-def get_patient_id(sql, _params):    
+def get_patient_id(sql, _params):
     response=athena_query_func(sql, _params)
-    results=athena_querys(response,sql,'',_params) 
+    results=athena_querys(response,sql,'',_params)
+    print(sql)
+    print(results)
     query_result=read_s3_file_to_df(ATHENA_WORKGROUP_BUCKET_NAME, f"{response['QueryExecutionId']}.csv", max_retries=5, initial_delay=1)
     return list(query_result.iloc[:,0])
 
@@ -656,21 +674,24 @@ def app_sidebar():
         st.write('---')
         st.write('### User Preference')
         models=[
-  "us.anthropic.claude-3-5-sonnet-20240620-v1:0",
-"us.anthropic.claude-3-5-haiku-20241022-v1:0",
- "us.anthropic.claude-3-sonnet-20240229-v1:0",
-  "us.anthropic.claude-3-haiku-20240307-v1:0",
-  'anthropic.claude-instant-v1', 
-  'anthropic.claude-v2']
+            # 'anthropic.claude-3-5-sonnet-20240620-v1:0',
+            # 'anthropic.claude-3-sonnet-20240229-v1:0',
+            # 'anthropic.claude-3-haiku-20240307-v1:0'
+            # 'anthropic.claude-instant-v1',
+            # 'anthropic.claude-v1'
+            # 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
+            'us.anthropic.claude-3-5-sonnet-20240620-v1:0',
+            'us.anthropic.claude-3-sonnet-20240229-v1:0'
+        ]
         model=st.selectbox('Model', models, index=0)
         summary_model=st.selectbox('Summary Model', models, index=1)
         db=get_database_list('AwsDataCatalog')
         database=st.selectbox('Select Database',options=db)#,index=6)
         # st.write(database)
-        tab=get_tables(database)            
+        tab=get_tables(database)
         tables=st.multiselect(
             'FHIR resources',
-            tab) 
+            tab)
         sql='''SELECT id FROM healthlake_db.patient;'''
         params={'table':tables,'db':database,'model':model,'summary-model':summary_model}
         patient_ids=get_patient_id(sql, params)
@@ -689,4 +710,4 @@ def main():
     st.session_state['button']=False
 
 if __name__ == '__main__':
-    main()       
+    main()
