@@ -14,6 +14,9 @@ import os
 import codecs
 import uuid
 import io
+import hmac
+import base64
+from urllib.parse import urlencode
 
 
 
@@ -30,6 +33,16 @@ st.markdown("""
     <meta http-equiv="Access-Control-Allow-Methods" content="GET, POST, OPTIONS">
     <meta http-equiv="Access-Control-Allow-Headers" content="Content-Type">
 """, unsafe_allow_html=True)
+if st.runtime.exists():
+    # Only set headers if running in Streamlit
+    headers = {
+        'X-Frame-Options': 'SAMEORIGIN',
+        'Content-Security-Policy': "frame-ancestors 'self' https://*.sagemaker.aws/",
+    }
+    for header, value in headers.items():
+        st.markdown(f"<meta http-equiv='{header}' content='{value}'>", unsafe_allow_html=True)
+
+
 
 ATHENA = boto3.client('athena', region_name='us-east-1')  
 GLUE = boto3.client('glue', region_name='us-east-1')
@@ -822,6 +835,3 @@ def main():
 if __name__ == '__main__':
     main()
     run_forever()  # Keep the app running
-
-if __name__ == '__main__':
-    main()
