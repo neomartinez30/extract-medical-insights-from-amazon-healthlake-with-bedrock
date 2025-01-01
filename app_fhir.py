@@ -4,45 +4,16 @@ import time
 import boto3
 import pandas as pd
 import multiprocessing
-import random
-import logging
-from botocore.config import Config
-from botocore.exceptions import ClientError
 import subprocess
 import shutil
 import os
 import codecs
 import uuid
 import io
-import hmac
-import base64
-from urllib.parse import urlencode
-
-
-
-# Set page config as the first Streamlit command
-st.set_page_config(page_icon=None, layout="wide", menu_items={
-    "Get Help": None,
-    "Report a bug": None,
-    "About": None
-})
-
-# Inject CORS headers
-st.markdown("""
-    <meta http-equiv="Access-Control-Allow-Origin" content="https://main.d1ekasyjgek930.amplifyapp.com">
-    <meta http-equiv="Access-Control-Allow-Methods" content="GET, POST, OPTIONS">
-    <meta http-equiv="Access-Control-Allow-Headers" content="Content-Type">
-""", unsafe_allow_html=True)
-if st.runtime.exists():
-    # Only set headers if running in Streamlit
-    headers = {
-        'X-Frame-Options': 'SAMEORIGIN',
-        'Content-Security-Policy': "frame-ancestors 'self' https://*.sagemaker.aws/",
-    }
-    for header, value in headers.items():
-        st.markdown(f"<meta http-equiv='{header}' content='{value}'>", unsafe_allow_html=True)
-
-
+from botocore.config import Config
+from botocore.exceptions import ClientError
+import random
+# from keras_hub.tokenizers import LlamaTokenizer
 
 ATHENA = boto3.client('athena', region_name='us-east-1')  
 GLUE = boto3.client('glue', region_name='us-east-1')
@@ -61,8 +32,10 @@ logging.basicConfig(format=FORMAT)
 logger = logging.getLogger(__name__)
 logger.setLevel("INFO")
 
-BEDROCK=boto3.client(service_name='bedrock-runtime',region_name='us-east-1',config=config)
 
+
+BEDROCK=boto3.client(service_name='bedrock-runtime',region_name='us-east-1',config=config)
+st.set_page_config(page_icon=None, layout="wide")
 with open('pricing.json','r',encoding='utf-8') as f:
     pricing_file = json.load(f)
 with open('config.json', 'r',encoding='utf-8') as f:
@@ -730,108 +703,13 @@ def app_sidebar():
         params['id']=patient_id
         params['template']=prompt_template
         return params
-
-
-def run_forever():
-    """Keep the Streamlit app running indefinitely"""
-    while True:
-        try:
-            time.sleep(1)
-        except KeyboardInterrupt:
-            sys.exit(0)
-    
- # Get the current route
-    try:
-        route = sys.argv[1] if len(sys.argv) > 1 else "/"
-    except:
-        route = "/"
-
-    if route == "/sidebar":
-        params = app_sidebar()
-        return params
         
-    elif route == "/summary":
-        if 'params' not in st.session_state:
-            st.error("Please configure parameters in sidebar first")
-            return
-            
-        colm1, _ = st.columns([1, 1])
-        with colm1:
-            container1 = st.empty()
-            if st.session_state.get('final_summary_1'):
-                st.header("Patients Consolidated Summary", divider='red')
-                st.markdown(st.session_state['final_summary_1'])
-                
-    elif route == "/chat":
-        if 'params' not in st.session_state:
-            st.error("Please configure parameters in sidebar first")
-            return
-            
-        with st.container(height=500):
-            if st.session_state.get('final_summary_1'):
-                for message in st.session_state.messages:
-                    with st.chat_message(message["role"]):
-                        if "```" in message["content"]:
-                            st.markdown(message["content"], unsafe_allow_html=True)
-                        else:
-                            st.markdown(message["content"].replace("\$", "\\$"), unsafe_allow_html=True)
-
-                if prompt := st.chat_input("What's up?"):
-                    st.session_state.messages.append({"role": "user", "content": prompt})
-                    with st.chat_message("user"):
-                        st.markdown(prompt.replace("\$", "\\$"), unsafe_allow_html=True)
-                    with st.chat_message("assistant"):
-                        message_placeholder = st.empty()
-                        system_prompt = "You are a medical expert."
-                        prompts = f'''Here is a medical record of a patient:
-<record>
-{st.session_state['summary_1']}
-</record>
-
-Review the patients medical record thoroughly.
-Provided an answer to the question if available in the medical record.
-Do not include or reference quoted content verbatim in the answer
-If the question cannot be answered by the document, say so.
-
-Question: {prompt}? '''
-                        output_answer = summary_llm(prompts, st.session_state['params'], system_prompt, message_placeholder)
-                        message_placeholder.markdown(output_answer.replace("\$", "\\$"), unsafe_allow_html=True)
-                        st.session_state.messages.append({"role": "assistant", "content": output_answer})
-                        st.rerun()
-                        
-    elif route == "/fhir":
-        if 'params' not in st.session_state:
-            st.error("Please configure parameters in sidebar first")
-            return
-            
-        if st.session_state.get('final_summary_1'):
-            with st.expander(label="**FHIR Section Summary**", expanded=True):
-                fhir_keys = list(st.session_state['fhir_summary'].keys())
-                header_holder = {}
-                tab_objects = st.tabs([f"**{x.upper()}**" for x in fhir_keys])
-                for i, tab_obj in enumerate(tab_objects):
-                    header_holder[fhir_keys[i]] = tab_obj
-                for key in fhir_keys:
-                    with header_holder[key]:
-                        st.markdown(st.session_state['fhir_summary'][key], unsafe_allow_html=True)
-                        
-            with st.expander(label="**FHIR Section Tables**", expanded=True):
-                fhir_table_keys = list(st.session_state['fhir_tables'].keys())
-                header_holder = {}
-                tab_objects = st.tabs([f"**{x.upper()}**" for x in fhir_table_keys])
-                for i, tab_obj in enumerate(tab_objects):
-                    header_holder[fhir_table_keys[i]] = tab_obj
-                for key in fhir_table_keys:
-                    with header_holder[key]:
-                        st.dataframe(st.session_state['fhir_tables'][key])
-    else:
-        st.error("Invalid route")
-
+        
+        
 def main():
-    params = app_sidebar()
+    params=app_sidebar()   
     struct_summary(params)
-    st.session_state['button'] = False
+    st.session_state['button']=False
 
 if __name__ == '__main__':
     main()
-    run_forever()  # Keep the app running
