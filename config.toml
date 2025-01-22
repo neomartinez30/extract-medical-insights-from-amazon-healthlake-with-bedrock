@@ -1,0 +1,4 @@
+[server]
+enableCORS = false
+enableXxsrfProtection = false
+port = 8503
