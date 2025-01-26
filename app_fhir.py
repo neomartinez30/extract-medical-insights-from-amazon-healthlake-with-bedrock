@@ -10,10 +10,21 @@ import os
 import codecs
 import uuid
 import io
-import sys
 from botocore.config import Config
 from botocore.exceptions import ClientError
 import random
+# from keras_hub.tokenizers import LlamaTokenizer
+
+ATHENA = boto3.client('athena', region_name='us-east-1')  
+GLUE = boto3.client('glue', region_name='us-east-1')
+S3 = boto3.client('s3', region_name='us-east-1')
+from botocore.config import Config
+config = Config(
+    read_timeout=120,
+    retries = dict(
+        max_attempts = 10
+    )
+)
 import logging
 
 FORMAT = "%(asctime)s %(message)s"
@@ -21,73 +32,19 @@ logging.basicConfig(format=FORMAT)
 logger = logging.getLogger(__name__)
 logger.setLevel("INFO")
 
-# Configure boto3 clients with retry logic
-config = Config(
-    read_timeout=120,
-    retries=dict(
-        max_attempts=10
-    )
-)
 
-# Load configuration files with proper error handling
-def load_config_files():
-    try:
-        with open('pricing.json', 'r', encoding='utf-8') as f:
-            pricing_file = json.load(f)
-    except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON in pricing.json: {str(e)}")
-        st.error("pricing.json contains invalid JSON. Please check the file format.")
-        sys.exit(1)
-    except FileNotFoundError:
-        logger.error("pricing.json file not found")
-        st.error("pricing.json file is missing. Please ensure the file exists.")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Error loading pricing.json: {str(e)}")
-        st.error("Failed to load pricing.json")
-        sys.exit(1)
 
-    try:
-        with open('config.json', 'r', encoding='utf-8') as f:
-            config_file = json.load(f)
-    except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON in config.json: {str(e)}")
-        st.error("config.json contains invalid JSON. Please check the file format.")
-        sys.exit(1)
-    except FileNotFoundError:
-        logger.error("config.json file not found")
-        st.error("config.json file is missing. Please ensure the file exists.")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Error loading config.json: {str(e)}")
-        st.error("Failed to load config.json")
-        sys.exit(1)
+BEDROCK=boto3.client(service_name='bedrock-runtime',region_name='us-east-1',config=config)
+st.set_page_config(page_icon=None, layout="wide")
+with open('pricing.json','r',encoding='utf-8') as f:
+    pricing_file = json.load(f)
+with open('config.json', 'r',encoding='utf-8') as f:
+    config_file = json.load(f)
 
-    return pricing_file, config_file
-
-# Load configurations
-pricing_file, config_file = load_config_files()
-
-# Initialize AWS clients
-try:
-    ATHENA = boto3.client('athena', region_name='us-east-1')
-    GLUE = boto3.client('glue', region_name='us-east-1')
-    S3 = boto3.client('s3', region_name='us-east-1')
-    BEDROCK = boto3.client(service_name='bedrock-runtime', region_name='us-east-1', config=config)
-    st.set_page_config(page_icon=None, layout="wide")
-except Exception as e:
-    logger.error(f"Failed to initialize AWS clients: {str(e)}")
-    st.error("Failed to initialize AWS services. Please check your credentials and permissions.")
-    sys.exit(1)
-
-# Get the Athena workgroup bucket name from config
 ATHENA_WORKGROUP_BUCKET_NAME = "athena-203918854345-22hcl401"
-if not ATHENA_WORKGROUP_BUCKET_NAME:
-    logger.error("Athena workgroup bucket name not found in config")
-    st.error("Athena workgroup bucket name is missing from config.json")
-    sys.exit(1)
 
-# Initialize session state
+logger.info("after edits")
+
 if 'messages' not in st.session_state:
     st.session_state['messages'] = []
 if 'token' not in st.session_state:
@@ -110,8 +67,12 @@ if 'fhir_tables' not in st.session_state:
     st.session_state['fhir_tables'] = None
 if 'cost' not in st.session_state:
     st.session_state['cost'] = 0
+import json
 
-logger.info("after edits")
+# #@st.cache_resource
+# # def token_counter(path):
+#     tokenizer = LlamaTokenizer.from_pretrained(path)
+#     return tokenizer
 
 @st.cache_data
 def get_database_list(catalog):
@@ -750,5 +711,7 @@ def main():
     struct_summary(params)
     st.session_state['button']=False
 
+if __name__ == '__main__':
+    main()
 if __name__ == '__main__':
     main()
