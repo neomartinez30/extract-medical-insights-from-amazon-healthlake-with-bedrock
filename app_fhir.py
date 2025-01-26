@@ -1,4 +1,3 @@
-import json
 import streamlit as st
 import time
 import boto3
@@ -14,6 +13,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 import random
 import logging
+import sys
 
 FORMAT = "%(asctime)s %(message)s"
 logging.basicConfig(format=FORMAT)
@@ -32,8 +32,6 @@ config = Config(
 
 BEDROCK=boto3.client(service_name='bedrock-runtime',region_name='us-east-1',config=config)
 st.set_page_config(page_icon=None, layout="wide")
-
-
 
 ATHENA_WORKGROUP_BUCKET_NAME = "athena-203918854345-22hcl401"
 
@@ -660,11 +658,93 @@ def app_sidebar():
         params['id']=patient_id
         params['template']=prompt_template
         return params
+
+def sidebar_route():
+    """Route for the sidebar configuration"""
+    params = app_sidebar()
+    return params
+
+def summary_route():
+    """Route for the consolidated summary section"""
+    if st.session_state['final_summary_1']:
+        st.header("Patients Consolidated Summary", divider='red')
+        st.markdown(st.session_state['final_summary _1'])
+
+def chat_route():
+    """Route for the chat interface"""
+    if st.session_state['final_summary_1']:
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                if "```" in message["content"]:
+                    st.markdown(message["content"], unsafe_allow_html=True)
+                else:
+                    st.markdown(message["content"].replace("\$", "\\$"), unsafe_allow_html=True)
+
+        if prompt := st.chat_input("Whats up?"):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt.replace("\$", "\\$"), unsafe_allow_html=True)
+            with st.chat_message("assistant"):
+                message_placeholder = st.empty()
+                system_prompt = "You are an medical expert."
+                prompts = f'''Here is a medical record of a patient:
+<record>
+{st.session_state['summary_1']}
+</record>
+
+Review the patients medical record thoroughly.
+Provided an answer to the question if available in the medical record.
+Do not include or reference quoted content verbatim in the answer
+If the question cannot be answered by the document, say so.
+
+Question: {prompt}? '''
+                params = {'model': "us.anthropic.claude-3-5-sonnet-20240620-v1:0"}
+                output_answer = summary_llm(prompts, params, system_prompt, message_placeholder)
+                message_placeholder.markdown(output_answer.replace("\$", "\\$"), unsafe_allow_html=True)
+                st.session_state.messages.append({"role": "assistant", "content": output_answer})
+                st.rerun()
+
+def fhir_route():
+    """Route for FHIR summaries and tables"""
+    if st.session_state['final_summary_1']:
+        with st.expander(label="**FHIR Section Summary**"):
+            fhir_keys = list(st.session_state['fhir_summary'].keys())
+            header_holder = {}
+            tab_objects = st.tabs([f"**{x.upper()}**" for x in fhir_keys])
+            for i, tab_obj in enumerate(tab_objects):
+                header_holder[fhir_keys[i]] = tab_obj
+            for key in fhir_keys:
+                with header_holder[key]:
+                    st.markdown(st.session_state['fhir_summary'][key], unsafe_allow_html=True)
         
+        with st.expander(label="**FHIR Section Tables**"):
+            fhir_table_keys = list(st.session_state['fhir_tables'].keys())
+            header_holder = {}
+            tab_objects = st.tabs([f"**{x.upper()}**" for x in fhir_table_keys])
+            for i, tab_obj in enumerate(tab_objects):
+                header_holder[fhir_table_keys[i]] = tab_obj
+            for key in fhir_table_keys:
+                with header_holder[key]:
+                    st.dataframe(st.session_state['fhir_tables'][key])
+
 def main():
-    params=app_sidebar()   
-    struct_summary(params)
-    st.session_state['button']=False
+    # Get the route from command line arguments
+    route = sys.argv[1] if len(sys.argv) > 1 else None
+    
+    if route == '/sidebar':
+        params = sidebar_route()
+        struct_summary(params)
+    elif route == '/summary':
+        summary_route()
+    elif route == '/chat':
+        chat_route()
+    elif route == '/fhir':
+        fhir_route()
+    else:
+        # Default route - show all sections
+        params = app_sidebar()
+        struct_summary(params)
+        st.session_state['button'] = False
 
 if __name__ == '__main__':
     main()
