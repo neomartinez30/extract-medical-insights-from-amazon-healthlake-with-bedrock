@@ -13,18 +13,6 @@ import io
 from botocore.config import Config
 from botocore.exceptions import ClientError
 import random
-# from keras_hub.tokenizers import LlamaTokenizer
-
-ATHENA = boto3.client('athena', region_name='us-east-1')  
-GLUE = boto3.client('glue', region_name='us-east-1')
-S3 = boto3.client('s3', region_name='us-east-1')
-from botocore.config import Config
-config = Config(
-    read_timeout=120,
-    retries = dict(
-        max_attempts = 10
-    )
-)
 import logging
 
 FORMAT = "%(asctime)s %(message)s"
@@ -32,12 +20,18 @@ logging.basicConfig(format=FORMAT)
 logger = logging.getLogger(__name__)
 logger.setLevel("INFO")
 
-
+ATHENA = boto3.client('athena', region_name='us-east-1')  
+GLUE = boto3.client('glue', region_name='us-east-1')
+S3 = boto3.client('s3', region_name='us-east-1')
+config = Config(
+    read_timeout=120,
+    retries = dict(
+        max_attempts = 10
+    )
+)
 
 BEDROCK=boto3.client(service_name='bedrock-runtime',region_name='us-east-1',config=config)
 st.set_page_config(page_icon=None, layout="wide")
-with open('pricing.json','r',encoding='utf-8') as f:
-    pricing_file = json.load(f)
 with open('config.json', 'r',encoding='utf-8') as f:
     config_file = json.load(f)
 
@@ -65,14 +59,6 @@ if 'fhir_summary' not in st.session_state:
     st.session_state['fhir_summary'] = None
 if 'fhir_tables' not in st.session_state:
     st.session_state['fhir_tables'] = None
-if 'cost' not in st.session_state:
-    st.session_state['cost'] = 0
-import json
-
-# #@st.cache_resource
-# # def token_counter(path):
-#     tokenizer = LlamaTokenizer.from_pretrained(path)
-#     return tokenizer
 
 @st.cache_data
 def get_database_list(catalog):
@@ -132,7 +118,6 @@ def get_table_context(sql, sql2, _prompt,_params):
 
     return query_result,query_result2
 
-
 def bedrock_streemer(params,response, handler):
     text=''
     for chunk in response['stream']:       
@@ -144,17 +129,12 @@ def bedrock_streemer(params,response, handler):
                 text += delta['text']       
                 if handler:
                     handler.markdown(text.replace("$","USD ").replace("%", " percent"))
-        # elif 'contentBlockStop' in chunk:              
-        #     text = ''
-
         elif 'messageStop' in chunk:
             stop_reason = chunk['messageStop']['stopReason']
         elif "metadata" in chunk:
             st.session_state['input_token']=chunk['metadata']['usage']["inputTokens"]
             st.session_state['output_token']=chunk['metadata']['usage']["outputTokens"]
             latency=chunk['metadata']['metrics']["latencyMs"]
-            pricing=st.session_state['input_token']*pricing_file[f"{params['model']}"]["input"]+st.session_state['output_token'] *pricing_file[f"{params['model']}"]["output"]
-            st.session_state['cost']+=pricing             
     return text
 
 def bedrock_claude_(params,chat_history,system_message, prompt,model_id,image_path, handler):
@@ -189,7 +169,6 @@ def bedrock_claude_(params,chat_history,system_message, prompt,model_id,image_pa
     response = BEDROCK.converse_stream(messages=chat_history_copy, modelId=model_id,inferenceConfig={"maxTokens": 2000, "temperature": 0.1,},system=system_message)
     answer=bedrock_streemer(params,response, handler) 
     return answer
-
 
 def _invoke_bedrock_with_retries(params,conversation_history, system_prompt, question, model_id, image_path=None, handler=None):
     max_retries = 10
@@ -244,7 +223,6 @@ def summary_llm(prompt,params, system_prompt,handler):
     answer =_invoke_bedrock_with_retries(params,[], system_prompt, prompt, model_id, [], handler)
     return answer
 
-
 def athena_query_func(statement, params):
     response = ATHENA.start_query_execution(
         QueryString=statement,
@@ -258,7 +236,6 @@ def athena_query_func(statement, params):
     return response
 
 def error_control(failed_attempts, statement, error, params):
-
     system_prompt="You are an expert SQL deugger for Amazon Athena"
     prompts=f'''Here is the schema of a table:
 <schema>
@@ -329,8 +306,6 @@ def chunk_csv_rows(csv_rows, max_token_per_chunk=10000):
 
     return chunks
 
-
-
 athena=boto3.client('athena')
 def athena_querys(response,q_s,prompt,params):
     if 'failure' in response:
@@ -347,24 +322,16 @@ def athena_querys(response,q_s,prompt,params):
                 'State' in response['QueryExecution']['Status']:
             state = response['QueryExecution']['Status']['State']
             if state == 'FAILED':                
-                # print("\nBAD SQL:\n")
-                # print(q_s)
                 error=response['QueryExecution']['Status']['AthenaError']['ErrorMessage']
-                # print("\nERROR:")
-                # print(error)
                 error_dict[max_execution+10]={'failed_query':q_s,'error':error}
                 answer=error_control(error_dict,q_s, error, params)
-                # print("\nDEBUGGIN...")
-                # print(answer)
                 idx1 = answer.index('<sql>')
                 idx2 = answer.index('</sql>')
                 answer=answer[idx1 + len('<sql>') + 1: idx2]                 
-                # response=athena_query_func(answer, params)
                 response, answer=athena_query_with_self_correction(prompt,answer, params,error_dict)
                 return {'result':response, 'sql':answer,'error control':1}
             elif state == 'SUCCEEDED':
                 return state
-
 
 @st.cache_data
 def get_tables(database):
@@ -406,7 +373,6 @@ def athena_query_with_self_correction(question,q_s, params, error_bank=None, max
                 except:            
                     response={"failure":f"Error Message: Could not successfully generate a SQL query to get patients medical data in {max_retries} attempts. Please let teh user know so they can try manually."}
                 return response, q_s
-
 
 def db_summary(params):
     print(params)
@@ -480,7 +446,6 @@ n/a
         fhir_table={params[0]:query_result}
         csv_result=query_result.to_csv()
         print('done')
-        
         
     elif message:
         print(message)
@@ -668,7 +633,6 @@ def get_patient_id(sql, _params):
 
 def app_sidebar():
     with st.sidebar:
-        st.text_input('Bedrock Usage Cost', str(round(st.session_state['cost'],2)))
         st.write('## How to use:')
         description = """A simple Interface for Querying and Chatting with your DataBase
         """
@@ -676,20 +640,13 @@ def app_sidebar():
         st.write('---')
         st.write('### User Preference')
         models=[
-            # 'anthropic.claude-3-5-sonnet-20240620-v1:0',
-            # 'anthropic.claude-3-sonnet-20240229-v1:0',
-            # 'anthropic.claude-3-haiku-20240307-v1:0'
-            # 'anthropic.claude-instant-v1',
-            # 'anthropic.claude-v1'
-            # 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
             'us.anthropic.claude-3-5-sonnet-20240620-v1:0',
             'us.anthropic.claude-3-sonnet-20240229-v1:0'
         ]
         model=st.selectbox('Model', models, index=0)
         summary_model=st.selectbox('Summary Model', models, index=1)
         db=get_database_list('AwsDataCatalog')
-        database=st.selectbox('Select Database',options=db)#,index=6)
-        # st.write(database)
+        database=st.selectbox('Select Database',options=db)
         tab=get_tables(database)
         tables=st.multiselect(
             'FHIR resources',
@@ -704,14 +661,10 @@ def app_sidebar():
         params['template']=prompt_template
         return params
         
-        
-        
 def main():
     params=app_sidebar()   
     struct_summary(params)
     st.session_state['button']=False
 
-if __name__ == '__main__':
-    main()
 if __name__ == '__main__':
     main()
