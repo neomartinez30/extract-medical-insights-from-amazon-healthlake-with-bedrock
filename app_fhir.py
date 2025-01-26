@@ -34,6 +34,7 @@ BEDROCK=boto3.client(service_name='bedrock-runtime',region_name='us-east-1',conf
 st.set_page_config(page_icon=None, layout="wide")
 
 
+
 ATHENA_WORKGROUP_BUCKET_NAME = "athena-203918854345-22hcl401"
 
 logger.info("after edits")
@@ -305,7 +306,7 @@ def chunk_csv_rows(csv_rows, max_token_per_chunk=10000):
 
     return chunks
 
-athena=boto3.client('athena')
+athena = boto3.client('athena', region_name='us-east-1')
 def athena_querys(response,q_s,prompt,params):
     if 'failure' in response:
         return {'failed':response, 'sql':q_s,'error control':1}
