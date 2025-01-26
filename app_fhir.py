@@ -32,8 +32,7 @@ config = Config(
 
 BEDROCK=boto3.client(service_name='bedrock-runtime',region_name='us-east-1',config=config)
 st.set_page_config(page_icon=None, layout="wide")
-with open('config.json', 'r',encoding='utf-8') as f:
-    config_file = json.load(f)
+
 
 ATHENA_WORKGROUP_BUCKET_NAME = "athena-203918854345-22hcl401"
 
