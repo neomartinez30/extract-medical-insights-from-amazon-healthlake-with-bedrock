@@ -86,7 +86,7 @@ def read_s3_file_to_df(bucket_name,key, max_retries=5, initial_delay=1):
         FileNotFoundError: If the file is not found after the maximum number of retries.
     """
     # Create an S3 client
-    s3 = boto3.client('s3')
+    s3 = boto3.client('s3', region_name='us-east-1')
     delay = initial_delay
 
     for retry in range(max_retries):
