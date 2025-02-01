@@ -9,8 +9,6 @@ import os
 import codecs
 import uuid
 import io
-import json
-import re
 from botocore.config import Config
 from botocore.exceptions import ClientError
 import random
@@ -32,7 +30,7 @@ config = Config(
     )
 )
 
-BEDROCK = boto3.client(service_name='bedrock-runtime', region_name='us-east-1', config=config)
+BEDROCK=boto3.client(service_name='bedrock-runtime',region_name='us-east-1',config=config)
 st.set_page_config(page_icon=None, layout="wide")
 
 ATHENA_WORKGROUP_BUCKET_NAME = "athena-203918854345-22hcl401"
@@ -66,10 +64,10 @@ def get_database_list(catalog):
         CatalogName=catalog,
     )
     print(response)
-    db = [x['Name'] for x in response['DatabaseList']]
+    db=[x['Name'] for x in response['DatabaseList']]
     return db
 
-def read_s3_file_to_df(bucket_name, key, max_retries=5, initial_delay=1):
+def read_s3_file_to_df(bucket_name,key, max_retries=5, initial_delay=1):
     """
     Reads a file from Amazon S3 into a pandas DataFrame with retry logic.
 
@@ -85,16 +83,21 @@ def read_s3_file_to_df(bucket_name, key, max_retries=5, initial_delay=1):
     Raises:
         FileNotFoundError: If the file is not found after the maximum number of retries.
     """
+    # Create an S3 client
+    s3 = boto3.client('s3', region_name='us-east-1')
     delay = initial_delay
 
     for retry in range(max_retries):
         try:
-            obj = S3.get_object(Bucket=ATHENA_WORKGROUP_BUCKET_NAME, Key=key)
+            # Download the file to memory
+            obj = s3.get_object(Bucket=ATHENA_WORKGROUP_BUCKET_NAME, Key=key)
             file_bytes = obj['Body'].read()
+
+            # Read the bytes into a pandas DataFrame
             df = pd.read_csv(io.BytesIO(file_bytes))
             return df
 
-        except S3.exceptions.NoSuchKey:
+        except s3.exceptions.NoSuchKey:
             if retry == max_retries - 1:
                 raise FileNotFoundError(f"File {key} not found after maximum retries.")
             else:
@@ -103,89 +106,69 @@ def read_s3_file_to_df(bucket_name, key, max_retries=5, initial_delay=1):
                 time.sleep(delay)
 
 @st.cache_data
-def get_table_context(sql, sql2, _prompt, _params):
-    response = athena_query_func(sql, _params)
-    results = athena_querys(response, sql, _prompt, _params)    
-    response1 = athena_query_func(sql2, _params)
-    results = athena_querys(response, sql2, _prompt, _params)
-    query_result = read_s3_file_to_df(ATHENA_WORKGROUP_BUCKET_NAME, f"{response['QueryExecutionId']}.csv", max_retries=5, initial_delay=1).to_csv()
-    query_result2 = read_s3_file_to_df(ATHENA_WORKGROUP_BUCKET_NAME, f"{response1['QueryExecutionId']}.csv", max_retries=5, initial_delay=1).to_csv()
+def get_table_context(sql, sql2, _prompt,_params):
+    response=athena_query_func(sql, _params)
+    results=athena_querys(response,sql, _prompt, _params)    
+    response1=athena_query_func(sql2, _params)
+    results=athena_querys(response,sql2, _prompt, _params)
+    query_result=read_s3_file_to_df(ATHENA_WORKGROUP_BUCKET_NAME, f"{response['QueryExecutionId']}.csv", max_retries=5, initial_delay=1).to_csv()
+    query_result2=read_s3_file_to_df(ATHENA_WORKGROUP_BUCKET_NAME, f"{response1['QueryExecutionId']}.csv", max_retries=5, initial_delay=1).to_csv()
 
-    return query_result, query_result2
+    return query_result,query_result2
 
-def bedrock_streemer(params, response, handler):
-    text = ''
-    for event in response:
-        chunk = json.loads(event['chunk']['bytes'].decode())
-        if 'delta' in chunk:
-            if 'text' in chunk['delta']:
-                text += chunk['delta']['text']
+def bedrock_streemer(params,response, handler):
+    text=''
+    for chunk in response['stream']:       
+        if 'contentBlockStart' in chunk:
+            tool = chunk['contentBlockStart']['start']['toolUse']       
+        elif 'contentBlockDelta' in chunk:
+            delta = chunk['contentBlockDelta']['delta']       
+            if 'text' in delta:
+                text += delta['text']       
                 if handler:
                     handler.markdown(text.replace("$","USD ").replace("%", " percent"))
+        elif 'messageStop' in chunk:
+            stop_reason = chunk['messageStop']['stopReason']
+        elif "metadata" in chunk:
+            st.session_state['input_token']=chunk['metadata']['usage']["inputTokens"]
+            st.session_state['output_token']=chunk['metadata']['usage']["outputTokens"]
+            latency=chunk['metadata']['metrics']["latencyMs"]
     return text
 
-def bedrock_claude_(params, chat_history, system_message, prompt, model_id, image_path, handler):
+def bedrock_claude_(params,chat_history,system_message, prompt,model_id,image_path, handler):
     chat_history_copy = chat_history[:]
-    content = []
-    
+    content=[]
     if image_path:
         if not isinstance(image_path, list):
-            image_path = [image_path]
+            image_path=[image_path]
         for img in image_path:
-            s3 = boto3.client('s3', region_name="us-east-1")
+            s3 = boto3.client('s3',region_name="us-east-1")
             match = re.match("s3://(.+?)/(.+)", img)
-            image_name = os.path.basename(img)
-            _, ext = os.path.splitext(image_name)
-            if "jpg" in ext: 
-                ext = ".jpeg"
+            image_name=os.path.basename(img)
+            _,ext=os.path.splitext(image_name)
+            if "jpg" in ext: ext=".jpeg"
             bucket_name = match.group(1)
             key = match.group(2)    
             obj = s3.get_object(Bucket=bucket_name, Key=key)
-            bytes_image = obj['Body'].read()
-            content.extend([
-                {"type": "text", "text": image_name},
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": f"image/{ext.lower().replace('.','')}", 
-                        "data": bytes_image
-                    }
-                }
-            ])
+            bytes_image=obj['Body'].read()
+            content.extend([{"text":image_name},{
+              "image": {
+                "format": f"{ext.lower().replace('.','')}",
+                "source": {"bytes":bytes_image}
+              }
+            }])
 
-    content.append({
-        "type": "text",
+    content.append({       
         "text": prompt
-    })
-
-    messages = [
-        {
-            "role": "system",
-            "content": system_message
-        },
-        {
-            "role": "user", 
-            "content": content
-        }
-    ]
-
-    body = json.dumps({
-        "anthropic_version": "bedrock-2023-05-31",
-        "messages": messages,
-        "max_tokens": 2000,
-        "temperature": 0.1
-    })
-
-    response = BEDROCK.invoke_model_with_response_stream(
-        modelId=model_id,
-        body=body
-    )
-    
-    answer = bedrock_streemer(params, response['body'], handler)
+            })
+    chat_history_copy.append({"role": "user",
+            "content": content})
+    system_message=[{"text":system_message}]
+    response = BEDROCK.converse_stream(messages=chat_history_copy, modelId=model_id,inferenceConfig={"maxTokens": 2000, "temperature": 0.1,},system=system_message)
+    answer=bedrock_streemer(params,response, handler) 
     return answer
 
-def _invoke_bedrock_with_retries(params, conversation_history, system_prompt, question, model_id, image_path=None, handler=None):
+def _invoke_bedrock_with_retries(params,conversation_history, system_prompt, question, model_id, image_path=None, handler=None):
     max_retries = 10
     backoff_base = 2
     max_backoff = 3  # Maximum backoff time in seconds
@@ -193,11 +176,12 @@ def _invoke_bedrock_with_retries(params, conversation_history, system_prompt, qu
 
     while True:
         try:
-            response = bedrock_claude_(params, conversation_history, system_prompt, question, model_id, image_path, handler)
+            response = bedrock_claude_(params,conversation_history, system_prompt, question, model_id, image_path, handler)
             return response
         except ClientError as e:
             if e.response['Error']['Code'] == 'ThrottlingException':
                 if retries < max_retries:
+                    # Throttling, exponential backoff
                     sleep_time = min(max_backoff, backoff_base ** retries + random.uniform(0, 1))
                     time.sleep(sleep_time)
                     retries += 1
@@ -205,6 +189,7 @@ def _invoke_bedrock_with_retries(params, conversation_history, system_prompt, qu
                     raise e
             elif e.response['Error']['Code'] == 'ModelStreamErrorException':
                 if retries < max_retries:
+                    # Throttling, exponential backoff
                     sleep_time = min(max_backoff, backoff_base ** retries + random.uniform(0, 1))
                     time.sleep(sleep_time)
                     retries += 1
@@ -212,29 +197,34 @@ def _invoke_bedrock_with_retries(params, conversation_history, system_prompt, qu
                     raise e
             elif e.response['Error']['Code'] == 'EventStreamError':
                 if retries < max_retries:
+                    # Throttling, exponential backoff
                     sleep_time = min(max_backoff, backoff_base ** retries + random.uniform(0, 1))
                     time.sleep(sleep_time)
                     retries += 1
                 else:
                     raise e
             elif e.response['Error']['Code'] == 'ValidationException':
+               
                 raise e
             else:
+                # Some other API error, rethrow
                 raise
 
-def query_llm(params, prompts, system_prompt):
-    model_id = params['model']
-    output = _invoke_bedrock_with_retries(params, [], system_prompt, prompts, model_id, [])
+def query_llm(params,prompts,system_prompt):
+    model_id=params['model']
+    output=_invoke_bedrock_with_retries(params,[], system_prompt, prompts, model_id, [])
     return output
 
-def summary_llm(prompt, params, system_prompt, handler):
-    model_id = params['summary-model']
-    answer = _invoke_bedrock_with_retries(params, [], system_prompt, prompt, model_id, [], handler)
+def summary_llm(prompt,params, system_prompt,handler):
+    import json
+    model_id=params['summary-model']
+    answer =_invoke_bedrock_with_retries(params,[], system_prompt, prompt, model_id, [], handler)
     return answer
 
 def athena_query_func(statement, params):
     response = ATHENA.start_query_execution(
         QueryString=statement,
+        # ClientRequestToken='string',
         WorkGroup='primary',
         QueryExecutionContext={
             'Database': params["db"],
@@ -244,8 +234,8 @@ def athena_query_func(statement, params):
     return response
 
 def error_control(failed_attempts, statement, error, params):
-    system_prompt = "You are an expert SQL deugger for Amazon Athena"
-    prompts = f'''Here is the schema of a table:
+    system_prompt="You are an expert SQL deugger for Amazon Athena"
+    prompts=f'''Here is the schema of a table:
 <schema>
 {params['schema']}
 </schema>
@@ -282,8 +272,8 @@ When generating the correct SQL statement:
 Format your response as:
 
 <sql> Correct SQL Statement </sql> '''
-    model_id = params['model']
-    output = _invoke_bedrock_with_retries(params, [], system_prompt, prompts, model_id, [])
+    model_id=params['model']
+    output=_invoke_bedrock_with_retries(params,[], system_prompt, prompts, model_id, [])
 
     return output
 
@@ -293,60 +283,61 @@ def chunk_csv_rows(csv_rows, max_token_per_chunk=10000):
     current_chunk = []
     current_token_count = 0
     chunks = []
-    header_token = len(header.split(","))
+    header_token=len(header.split(","))
     for row in csv_rows:
         token = len(row.split(","))   # Assuming that the row is a space-separated CSV row.
 
-        if current_token_count + token + header_token <= max_token_per_chunk:
+        if current_token_count + token+header_token <= max_token_per_chunk:
             current_chunk.append(row)
             current_token_count += token
         else:
             if not current_chunk:
                 raise ValueError("A single CSV row exceeds the specified max_token_per_chunk.")
-            header_and_chunk = [header] + current_chunk
+            header_and_chunk=[header]+current_chunk
             chunks.append("\n".join([x for x in header_and_chunk]))
             current_chunk = [row]
             current_token_count = token
 
     if current_chunk:
-        last_chunk_and_header = [header] + current_chunk
+        last_chunk_and_header=[header]+current_chunk
         chunks.append("\n".join([x for x in last_chunk_and_header]))
 
     return chunks
 
-def athena_querys(response, q_s, prompt, params):
+athena = boto3.client('athena', region_name='us-east-1')
+def athena_querys(response,q_s,prompt,params):
     if 'failure' in response:
-        return {'failed': response, 'sql': q_s, 'error control': 1}
-    max_execution = 10
+        return {'failed':response, 'sql':q_s,'error control':1}
+    max_execution=10
     execution_id = response['QueryExecutionId']
     state = 'RUNNING'
-    error_dict = {}
+    error_dict={}
     while (max_execution > 0 and state in ['RUNNING', 'QUEUED']):
         max_execution = max_execution - 1
-        response = ATHENA.get_query_execution(QueryExecutionId=execution_id)
+        response = ATHENA.get_query_execution(QueryExecutionId = execution_id)
         if 'QueryExecution' in response and \
                 'Status' in response['QueryExecution'] and \
                 'State' in response['QueryExecution']['Status']:
             state = response['QueryExecution']['Status']['State']
             if state == 'FAILED':                
-                error = response['QueryExecution']['Status']['AthenaError']['ErrorMessage']
-                error_dict[max_execution + 10] = {'failed_query': q_s, 'error': error}
-                answer = error_control(error_dict, q_s, error, params)
+                error=response['QueryExecution']['Status']['AthenaError']['ErrorMessage']
+                error_dict[max_execution+10]={'failed_query':q_s,'error':error}
+                answer=error_control(error_dict,q_s, error, params)
                 idx1 = answer.index('<sql>')
                 idx2 = answer.index('</sql>')
-                answer = answer[idx1 + len('<sql>') + 1: idx2]                 
-                response, answer = athena_query_with_self_correction(prompt, answer, params, error_dict)
-                return {'result': response, 'sql': answer, 'error control': 1}
+                answer=answer[idx1 + len('<sql>') + 1: idx2]                 
+                response, answer=athena_query_with_self_correction(prompt,answer, params,error_dict)
+                return {'result':response, 'sql':answer,'error control':1}
             elif state == 'SUCCEEDED':
                 return state
 
 @st.cache_data
 def get_tables(database):
-    tab = GLUE.get_tables(DatabaseName=database)
-    tables = [x["Name"] for x in tab['TableList']]
+    tab=GLUE.get_tables(DatabaseName=database)
+    tables=[x["Name"] for x in tab['TableList']]
     return tables
 
-def athena_query_with_self_correction(question, q_s, params, error_bank=None, max_retries=5):
+def athena_query_with_self_correction(question,q_s, params, error_bank=None, max_retries=5):
     """
     Execute an Athena query genereated by an LLM with retry logic and error handling.
 
@@ -361,38 +352,38 @@ def athena_query_with_self_correction(question, q_s, params, error_bank=None, ma
     """
     count = 0    
     if not error_bank:
-        error_bank = {}
+        error_bank={}
     while count < max_retries:
         try:
             response = athena_query_func(q_s, params)
             return response, q_s
         except Exception as e:
             print(count)
-            error_bank[count + 1] = {'failed_query': q_s, 'error': e}
+            error_bank[count+1]={'failed_query':q_s,'error':e}
             q_s = error_control(error_bank, q_s, e, params)
             idx1 = q_s.index('<sql>')
             idx2 = q_s.index('</sql>')
             q_s = q_s[idx1 + len('<sql>') + 1: idx2]
             count += 1
-            if count == max_retries:
+            if count==max_retries:
                 try:
                     response = athena_query_func(q_s, params)
                 except:            
-                    response = {"failure": f"Error Message: Could not successfully generate a SQL query to get patients medical data in {max_retries} attempts. Please let teh user know so they can try manually."}
+                    response={"failure":f"Error Message: Could not successfully generate a SQL query to get patients medical data in {max_retries} attempts. Please let teh user know so they can try manually."}
                 return response, q_s
 
 def db_summary(params):
     print(params)
-    sql = f"SELECT * FROM information_schema.columns WHERE table_name='{params[0]}' AND table_schema='{params[1]['db']}'"
-    sql2 = f"SELECT * from {params[1]['db']}.{params[0]} LIMIT 3"
-    patient_id = params[1]['id']
-    question = f"Query all information on patient {patient_id}?"
-    schema, schema_example = get_table_context(sql, sql2, question, params[1])
-    params[1]['schema'] = schema
-    params[1]['sample'] = schema_example
+    sql=f"SELECT * FROM information_schema.columns WHERE table_name='{params[0]}' AND table_schema='{params[1]['db']}'"
+    sql2=f"SELECT * from {params[1]['db']}.{params[0]} LIMIT 3"
+    patient_id=params[1]['id']
+    question=f"Query all information on patient {patient_id}?"
+    schema, schema_example =get_table_context(sql, sql2,question, params[1])
+    params[1]['schema']=schema
+    params[1]['sample']=schema_example
     
-    system_prompt = "You are an expert SQl developer that generates syntaically correct SQL queries to be executed on Amazon Athena."
-    prompts = f'''Here is the schema of the Amazon Healthlake table in CSV format:
+    system_prompt="You are an expert SQl developer that generates syntaically correct SQL queries to be executed on Amazon Athena."
+    prompts=f'''Here is the schema of the Amazon Healthlake table in CSV format:
 <table_schema>
 {schema}
 </table_schema>
@@ -418,55 +409,55 @@ n/a
 </sql>'''
 
     print("bedrock")
-    q_s = query_llm(params[1], prompts, system_prompt)
+    q_s=query_llm(params[1],prompts,system_prompt)
     idx1 = q_s.index('<sql>')
     idx2 = q_s.index('</sql>')
-    q_s = q_s[idx1 + len('<sql>') + 1: idx2]
+    q_s=q_s[idx1 + len('<sql>') + 1: idx2]
     if q_s.strip() in ['n/a', 'N/A']:
-        message = f"Notification Message: The current {params[0]} table does not appear to have any direct link or information on {patient_id}. Please inform the user of this."
+        message=f"Notification Message: The current {params[0]} table does not appear to have any direct link or information on {patient_id}. Please inform the user of this."
     else:
         response, q_s = athena_query_with_self_correction(question, q_s, params[1])
 
         if 'failure' in response:
-            message = response['failure']            
+            message=response['failure']            
         else:
-            results = athena_querys(response, q_s, question, params[1])
-            message = None
-            retry_count = 5
+            results=athena_querys(response,q_s,question, params[1])
+            message=None
+            retry_count=5
             if isinstance(results, dict):
-                i = 0
+                i=0
                 while isinstance(results, dict):
-                    if i < retry_count:  
+                    if i<retry_count:  
                         if 'failed' in results:
-                            message = f"Error Message: Could not successfully generate a SQL query to get patients medical data in {i} attempts. Please let the user know so they can try manually"
+                            message=f"Error Message: Could not successfully generate a SQL query to get patients medical data in {i} attempts. Please let the user know so they can try manually"
                             break
-                        response = results['result']
-                        q_s = results['sql']
-                        results = athena_querys(response, q_s, question, params[1])
-                        i += 1                        
-                    if i == retry_count:
-                        message = f"Error Message: Could not successfully generate a SQL query to get patients medical data in {i} attempts. Please let the user know so they can try manually"
+                        response=results['result']
+                        q_s=results['sql']
+                        results=athena_querys(response,q_s,question,params[1])
+                        i+=1                        
+                    if i==retry_count:
+                        message=f"Error Message: Could not successfully generate a SQL query to get patients medical data in {i} attempts. Please let the user know so they can try manually"
                         break
 
     if not message:        
-        query_result = read_s3_file_to_df(ATHENA_WORKGROUP_BUCKET_NAME, f"{response['QueryExecutionId']}.csv", max_retries=5, initial_delay=1)        
-        fhir_table = {params[0]: query_result}
-        csv_result = query_result.to_csv()
+        query_result=read_s3_file_to_df(ATHENA_WORKGROUP_BUCKET_NAME, f"{response['QueryExecutionId']}.csv", max_retries=5, initial_delay=1)        
+        fhir_table={params[0]:query_result}
+        csv_result=query_result.to_csv()
         print('done')
         
     elif message:
         print(message)
-        csv_result = message
-        fhir_table = {params[0]: pd.DataFrame()}
+        csv_result=message
+        fhir_table={params[0]:pd.DataFrame()}
 
-    input_token = len(csv_result.split(','))
-    if input_token > 100000:    
-        csv_rows = csv_result.split('\n')
-        chunk_rows = chunk_csv_rows(csv_rows, max_token_per_chunk=50000)
-        initial_summary = []
+    input_token=len(csv_result.split(','))
+    if input_token>100000:    
+        csv_rows=csv_result.split('\n')
+        chunk_rows=chunk_csv_rows(csv_rows, max_token_per_chunk=50000)
+        initial_summary=[]
         for chunk in chunk_rows:
-            system_prompt = "You are a medical expert great at analyzing patient data in FHIR format"
-            prompts = f'''Here is a patient's {patient_id} medical data:
+            system_prompt="You are a medical expert great at analyzing patient data in FHIR format"
+            prompts=f'''Here is a patient's {patient_id} medical data:
 <medical data>
 {chunk}
 </medical data>
@@ -474,8 +465,8 @@ n/a
 Provide a detailed technical summary of patient {patient_id} from the above medical data ONLY. DO NOT make any assumptions or add any information not explicitly stated in the medical data.
 Do not ask any clarification questions.
 If the data is empty, respond with "no relevant information". If the data is nor comma seperated and contains an "Error" or "Notification" message, respond with the message. '''
-            initial_summary.append(summary_llm(prompts, params[1], system_prompt, False))
-        system_prompt = "You are a great summarizer with a medical background."
+            initial_summary.append(summary_llm(prompts,params[1], system_prompt,False))
+        system_prompt="You are a great summarizer with a medical background."
         prompts = f'''Here is a list of summaries from a given FHIR resource of patient {patient_id} medical record.
 <summaries>
 {initial_summary}
@@ -484,11 +475,11 @@ If the data is empty, respond with "no relevant information". If the data is nor
 The summaries are in a list format, collectively containing full information on the patients given FHIR resource.
 Review the summaries in great detail.        
 Merge the summaries into a single coherent and cohesive narrative of the patients medical file. '''
-        summary = summary_llm(prompts, params[1], system_prompt, False)
-        summary = {params[0]: summary}
+        summary=summary_llm(prompts,params[1], system_prompt,False)
+        summary={params[0]:summary}
     else:
-        system_prompt = "You are a medical expert great at analyzing patient data in FHIR format"
-        prompts = f'''Here is patient's {patient_id} medical data:
+        system_prompt="You are a medical expert great at analyzing patient data in FHIR format"
+        prompts=f'''Here is patient's {patient_id} medical data:
 <medical data>
 {csv_result}
 </medical data>
@@ -497,9 +488,9 @@ Provide a detailed technical summary of patient {patient_id} from the above medi
 Capture every relevant medical information and associated dates if available.
 Do not ask any clarification questions or make up any information.
 If the data is empty, respond with "no relevant information". If the data is nor comma seperated and contains an "Error" or "Notification" message, respond with the message. '''
-        summary = summary_llm(prompts, params[1], system_prompt, False)
-        summary = {params[0]: summary}
-    return summary, fhir_table
+        summary=summary_llm(prompts,params[1], system_prompt,False)
+        summary={params[0]:summary}
+    return summary,fhir_table
 
 def struct_summary(params):
     prompts = ""
@@ -631,11 +622,11 @@ Question: {prompt}? '''
                         st.rerun()
 
 def get_patient_id(sql, _params):
-    response = athena_query_func(sql, _params)
-    results = athena_querys(response, sql, '', _params)
+    response=athena_query_func(sql, _params)
+    results=athena_querys(response,sql,'',_params)
     print(sql)
     print(results)
-    query_result = read_s3_file_to_df(ATHENA_WORKGROUP_BUCKET_NAME, f"{response['QueryExecutionId']}.csv", max_retries=5, initial_delay=1)
+    query_result=read_s3_file_to_df(ATHENA_WORKGROUP_BUCKET_NAME, f"{response['QueryExecutionId']}.csv", max_retries=5, initial_delay=1)
     return list(query_result.iloc[:,0])
 
 def app_sidebar():
@@ -646,26 +637,26 @@ def app_sidebar():
         st.write(description)
         st.write('---')
         st.write('### User Preference')
-        models = [
+        models=[
             'us.anthropic.claude-3-5-sonnet-20240620-v1:0',
             'us.anthropic.claude-3-sonnet-20240229-v1:0'
         ]
-        model = st.selectbox('Model', models, index=0)
-        summary_model = st.selectbox('Summary Model', models, index=1)
-        db = get_database_list('AwsDataCatalog')
-        database = st.selectbox('Select Database', options=db)
-        tab = get_tables(database)
-        tables = st.multiselect(
+        model=st.selectbox('Model', models, index=0)
+        summary_model=st.selectbox('Summary Model', models, index=1)
+        db=get_database_list('AwsDataCatalog')
+        database=st.selectbox('Select Database',options=db)
+        tab=get_tables(database)
+        tables=st.multiselect(
             'FHIR resources',
             tab)
-        sql = '''SELECT id FROM healthlake_db.patient;'''
-        params = {'table': tables, 'db': database, 'model': model, 'summary-model': summary_model}
-        patient_ids = get_patient_id(sql, params)
-        patient_id = st.selectbox('Patients ID', options=patient_ids)
-        prompt_template = st.selectbox('Prompt Templates', options=['prompt 1', 'prompt 2'])
-        st.session_state['button'] = st.button('Summarize', type='primary', key='structured')
-        params['id'] = patient_id
-        params['template'] = prompt_template
+        sql='''SELECT id FROM healthlake_db.patient;'''
+        params={'table':tables,'db':database,'model':model,'summary-model':summary_model}
+        patient_ids=get_patient_id(sql, params)
+        patient_id=st.selectbox('Patients ID',options=patient_ids)
+        prompt_template=st.selectbox('Prompt Templates',options=['prompt 1','prompt 2'])
+        st.session_state['button']=st.button('Summarize', type='primary', key='structured')
+        params['id']=patient_id
+        params['template']=prompt_template
         return params
 
 def sidebar_route():
@@ -677,7 +668,7 @@ def summary_route():
     """Route for the consolidated summary section"""
     if st.session_state['final_summary_1']:
         st.header("Patients Consolidated Summary", divider='red')
-        st.markdown(st.session_state['final_summary_1'])
+        st.markdown(st.session_state['final_summary _1'])
 
 def chat_route():
     """Route for the chat interface"""
@@ -687,7 +678,7 @@ def chat_route():
                 if "```" in message["content"]:
                     st.markdown(message["content"], unsafe_allow_html=True)
                 else:
-                    st.markdown(message["content"].replace("\ $", "\\$"), unsafe_allow_html=True)
+                    st.markdown(message["content"].replace("\$", "\\$"), unsafe_allow_html=True)
 
         if prompt := st.chat_input("Whats up?"):
             st.session_state.messages.append({"role": "user", "content": prompt})
